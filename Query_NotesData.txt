@@ -1,0 +1,35 @@
+
+
+WITH first_stays AS (
+  -- This CTE identifies the cohort and remains the same
+  SELECT
+    p.subject_id,
+    a.hadm_id,
+    i.icustay_id,
+    i.intime
+  FROM
+    `physionet-data.mimiciii_clinical.patients` p
+  INNER JOIN
+    `physionet-data.mimiciii_clinical.admissions` a ON p.subject_id = a.subject_id
+  INNER JOIN
+    `physionet-data.mimiciii_clinical.icustays` i ON a.hadm_id = i.hadm_id
+  WHERE
+    TIMESTAMP_DIFF(i.intime, p.dob, YEAR) > 18
+  QUALIFY
+    ROW_NUMBER() OVER(PARTITION BY p.subject_id ORDER BY i.intime) = 1
+)
+-- Now, join with noteevents and aggregate the text
+SELECT
+  fs.icustay_id,
+  STRING_AGG(ne.text, ' ') AS text
+FROM
+  first_stays fs
+LEFT JOIN
+  `physionet-data.mimiciii_notes.noteevents` ne
+  ON fs.hadm_id = ne.hadm_id
+WHERE
+  ne.charttime BETWEEN fs.intime AND TIMESTAMP_ADD(fs.intime, INTERVAL 24 HOUR)
+  AND ne.category IN ('Nursing/other', 'Physician', 'Nursing')
+  AND ne.iserror IS NULL
+GROUP BY
+  fs.icustay_id;

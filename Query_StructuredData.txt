@@ -1,0 +1,81 @@
+
+WITH first_stays AS (
+  -- First, select the first ICU stay for each adult patient
+  SELECT
+    p.subject_id,
+    a.hadm_id,
+    i.icustay_id,
+    i.intime,
+    i.outtime,
+    TIMESTAMP_DIFF(i.intime, p.dob, YEAR) AS age,
+    p.gender,
+    a.hospital_expire_flag
+  FROM
+    `physionet-data.mimiciii_clinical.patients` p
+  INNER JOIN
+    `physionet-data.mimiciii_clinical.admissions` a ON p.subject_id = a.subject_id
+  INNER JOIN
+    `physionet-data.mimiciii_clinical.icustays` i ON a.hadm_id = i.hadm_id
+  WHERE
+    TIMESTAMP_DIFF(i.intime, p.dob, YEAR) > 18 
+  QUALIFY
+    ROW_NUMBER() OVER(PARTITION BY p.subject_id ORDER BY i.intime) = 1 -- Then select the first stay
+),
+vitals_and_labs AS (
+  -- Next, get all relevant chartevents and labevents within the first 24 hours
+  SELECT
+    fs.icustay_id,
+    CASE WHEN ce.itemid IN (211, 220045) THEN ce.valuenum END AS heart_rate,
+    CASE WHEN ce.itemid IN (51, 442, 455, 6701, 220179, 220050) THEN ce.valuenum END AS sbp,
+    CASE WHEN ce.itemid IN (646, 220277) THEN ce.valuenum END AS spo2,
+    CASE WHEN ce.itemid IN (223761, 678) THEN (ce.valuenum - 32) * 5/9 WHEN ce.itemid IN (223762, 676) THEN ce.valuenum END AS tempc,
+    CASE WHEN le.itemid = 51301 THEN le.valuenum END AS wbc,
+    CASE WHEN le.itemid = 50912 THEN le.valuenum END AS creatinine
+  FROM
+    first_stays fs
+  LEFT JOIN
+    `physionet-data.mimiciii_clinical.chartevents` ce ON fs.icustay_id = ce.icustay_id
+    AND ce.charttime BETWEEN fs.intime AND TIMESTAMP_ADD(fs.intime, INTERVAL 24 HOUR)
+  LEFT JOIN
+     `physionet-data.mimiciii_clinical.labevents` le ON fs.hadm_id = le.hadm_id
+    AND le.charttime BETWEEN fs.intime AND TIMESTAMP_ADD(fs.intime, INTERVAL 24 HOUR)
+)
+-- Finally, aggregate the pivoted data to create one row per ICU stay
+SELECT
+  fs.subject_id,
+  fs.hadm_id,
+  fs.icustay_id,
+  fs.age,
+  fs.gender,
+  fs.hospital_expire_flag,
+  MIN(vl.heart_rate) AS heart_rate_min,
+  MAX(vl.heart_rate) AS heart_rate_max,
+  AVG(vl.heart_rate) AS heart_rate_mean,
+  MIN(vl.sbp) AS sbp_min,
+  MAX(vl.sbp) AS sbp_max,
+  AVG(vl.sbp) AS sbp_mean,
+  MIN(vl.spo2) AS spo2_min,
+  MAX(vl.spo2) AS spo2_max,
+  AVG(vl.spo2) AS spo2_mean,
+  MIN(vl.tempc) AS tempc_min,
+  MAX(vl.tempc) AS tempc_max,
+  AVG(vl.tempc) AS tempc_mean,
+  MIN(vl.wbc) AS wbc_min,
+  MAX(vl.wbc) AS wbc_max,
+  AVG(vl.wbc) AS wbc_mean,
+  MIN(vl.creatinine) AS creatinine_min,
+  MAX(vl.creatinine) AS creatinine_max,
+  AVG(vl.creatinine) AS creatinine_mean
+FROM
+  first_stays fs
+LEFT JOIN
+  vitals_and_labs vl ON fs.icustay_id = vl.icustay_id
+GROUP BY
+  fs.subject_id,
+  fs.hadm_id,
+  fs.icustay_id,
+  fs.age,
+  fs.gender,
+  fs.hospital_expire_flag
+ORDER BY
+  fs.subject_id;
